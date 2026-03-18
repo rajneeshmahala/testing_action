@@ -158,30 +158,3 @@ jobs:
             feature-pipeline
 
       # ─── Slack Notification ───────────────────────────────────────────────────
-      - name: Notify Slack
-        if: always()
-        env:
-          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
-          BRANCH:  ${{ steps.vars.outputs.branch }}
-          TARGET:  ${{ steps.map.outputs.target }}
-          CONFLICT: ${{ steps.conflict.outputs.conflict }}
-          STATUS:  ${{ job.status }}
-        run: |
-          if [[ "$CONFLICT" == "true" ]]; then
-            ICON="❌"
-            MESSAGE="Conflict detected — merge blocked."
-          elif [[ "$STATUS" == "success" ]]; then
-            ICON="✅"
-            MESSAGE="Successfully merged into \`$TARGET\`."
-          else
-            ICON="⚠️"
-            MESSAGE="Pipeline finished with status: $STATUS"
-          fi
-
-          curl -s -o /dev/null -w "%{http_code}" \
-            -X POST \
-            -H 'Content-type: application/json' \
-            --data "{
-              \"text\": \"$ICON *Feature Pipeline* | \`$BRANCH\` → \`$TARGET\`\n$MESSAGE\"
-            }" \
-            "$SLACK_WEBHOOK"
