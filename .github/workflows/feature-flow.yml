@@ -1,0 +1,88 @@
+name: Feature Automation Pipeline
+
+on:
+  push:
+    branches:
+      - 'feature/*'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  feature-flow:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      # 🧠 Extract branch name
+      - name: Get Branch Name
+        id: vars
+        run: |
+          BRANCH_NAME=${GITHUB_REF#refs/heads/}
+          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+
+      # 🧠 Determine target WIP branch dynamically
+      - name: Map to WIP Branch
+        id: map
+        run: |
+          BRANCH="${{ steps.vars.outputs.branch }}"
+
+          if [[ $BRANCH == *"api"* && $BRANCH == *"team1"* ]]; then
+            echo "target=wip/api-team1" >> $GITHUB_OUTPUT
+          elif [[ $BRANCH == *"ui"* && $BRANCH == *"team1"* ]]; then
+            echo "target=wip/ui-team1" >> $GITHUB_OUTPUT
+          elif [[ $BRANCH == *"api"* && $BRANCH == *"team2"* ]]; then
+            echo "target=wip/api-team2" >> $GITHUB_OUTPUT
+          elif [[ $BRANCH == *"api"* && $BRANCH == *"team3"* ]]; then
+            echo "target=wip/api-team3" >> $GITHUB_OUTPUT
+          else
+            echo "target=wip/api-team1" >> $GITHUB_OUTPUT
+          fi
+
+      # 🔍 Merge Conflict Detection
+      - name: Check Merge Conflict
+        id: conflict
+        run: |
+          TARGET="${{ steps.map.outputs.target }}"
+          git fetch origin $TARGET
+
+          git checkout $TARGET
+          git checkout -
+
+          if git merge origin/$TARGET --no-commit --no-ff; then
+            echo "conflict=false" >> $GITHUB_OUTPUT
+          else
+            echo "conflict=true" >> $GITHUB_OUTPUT
+          fi
+
+      # ❌ Fail if conflict detected
+      - name: Stop if Conflict Found
+        if: steps.conflict.outputs.conflict == 'true'
+        run: |
+          echo "❌ Merge conflict detected with WIP branch. Fix required."
+          exit 1
+
+      # 🤖 Create Pull Request
+      - name: Create PR to WIP
+        uses: peter-evans/create-pull-request@v5
+        with:
+          base: ${{ steps.map.outputs.target }}
+          title: "Auto PR: ${{ steps.vars.outputs.branch }} → ${{ steps.map.outputs.target }}"
+          body: |
+            🚀 Auto-created PR
+
+            Source: ${{ steps.vars.outputs.branch }}
+            Target: ${{ steps.map.outputs.target }}
+
+            ✅ Conflict Check Passed
+
+      # 📢 Slack Notification (Optional)
+     # - name: Notify Slack
+      #  if: always()
+       # run: |
+        #  curl -X POST -H 'Content-type: application/json' \
+         # --data "{\"text\":\"Feature Pipeline: ${{ steps.vars.outputs.branch }} processed\"}" \
+          #${{ secrets.SLACK_WEBHOOK }}
