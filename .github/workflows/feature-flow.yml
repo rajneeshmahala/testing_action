@@ -14,18 +14,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout code
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Extract branch name
+      # Extract branch
       - name: Get Branch
         id: vars
         run: |
           BRANCH=${GITHUB_REF#refs/heads/}
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
 
-      # Map feature → WIP branch
+      # Map feature → WIP
       - name: Map WIP Branch
         id: map
         run: |
@@ -46,17 +45,31 @@ jobs:
 
           echo "target=$TARGET" >> $GITHUB_OUTPUT
 
-      # Conflict detection (robust + safe)
+      # Extract commit author (for audit)
+      - name: Get Commit Author
+        id: author
+        run: |
+          NAME=$(git log -1 --pretty=format:'%an')
+          EMAIL=$(git log -1 --pretty=format:'%ae')
+
+          echo "name=$NAME" >> $GITHUB_OUTPUT
+          echo "email=$EMAIL" >> $GITHUB_OUTPUT
+
+      # Configure Git with real author
+      - name: Configure Git
+        run: |
+          git config --global user.name "${{ steps.author.outputs.name }}"
+          git config --global user.email "${{ steps.author.outputs.email }}"
+
+      # Conflict detection
       - name: Check Conflict with WIP
         run: |
           TARGET="${{ steps.map.outputs.target }}"
 
           git fetch origin $TARGET
 
-          # Create temp branch for safe merge simulation
           git checkout -b temp-merge-check
 
-          # Try merge (handles unrelated history too)
           if git merge origin/$TARGET --no-commit --no-ff --allow-unrelated-histories; then
             echo "✅ No conflict"
           else
@@ -64,15 +77,23 @@ jobs:
             exit 1
           fi
 
-      # Create PR (no approval, no notify, pipeline ends here)
+      # Create PR (with audit info)
       - name: Create PR
         uses: peter-evans/create-pull-request@v5
         with:
           base: ${{ steps.map.outputs.target }}
           title: "Feature → WIP: ${{ steps.vars.outputs.branch }}"
           body: |
-            Source: ${{ steps.vars.outputs.branch }}
-            Target: ${{ steps.map.outputs.target }}
+            🔹 Auto-created PR
+
+            Source Branch: ${{ steps.vars.outputs.branch }}
+            Target Branch: ${{ steps.map.outputs.target }}
+
+            --- Audit Info ---
+            Triggered By (GitHub Actor): ${{ github.actor }}
+            Commit Author: ${{ steps.author.outputs.name }}
+            Author Email: ${{ steps.author.outputs.email }}
+            Commit SHA: ${{ github.sha }}
 
           labels: |
             feature
