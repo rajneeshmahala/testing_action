@@ -5,18 +5,16 @@ on:
     branches:
       - 'feature/*'
 
-permissions:
-  contents: write
-  pull-requests: write
-
 jobs:
-  create-pr:
+  open-pr:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+      pull-requests: write
+
     steps:
-      # Checkout code
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       # Get branch name
       - name: Get Branch Name
@@ -45,7 +43,7 @@ jobs:
 
           echo "target=$TARGET" >> $GITHUB_OUTPUT
 
-      # ✅ Safe conflict detection (no merge commit, no errors)
+      # ✅ Conflict check (safe method)
       - name: Check Conflict
         run: |
           TARGET="${{ steps.map.outputs.target }}"
@@ -61,19 +59,30 @@ jobs:
             echo "✅ No conflict"
           fi
 
-      # 🚀 Create PR using GitHub CLI
-      - name: Create PR
+      # 🚀 Create PR (reference-based logic)
+      - name: Create Pull Request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SOURCE="${{ steps.vars.outputs.branch }}"
           TARGET="${{ steps.map.outputs.target }}"
 
-          echo "Creating PR from $SOURCE → $TARGET"
+          echo "Checking existing PR from $SOURCE → $TARGET"
 
-          gh pr create \
+          EXISTING=$(gh pr list \
             --base "$TARGET" \
             --head "$SOURCE" \
-            --title "Feature → WIP: $SOURCE" \
-            --body "Auto-created PR from $SOURCE to $TARGET" \
-          || echo "PR already exists or cannot be created"
+            --state open \
+            --json number \
+            --jq '.[0].number')
+
+          if [ -z "$EXISTING" ]; then
+            echo "Creating new PR..."
+            gh pr create \
+              --base "$TARGET" \
+              --head "$SOURCE" \
+              --title "Feature → WIP: $SOURCE" \
+              --body "Auto-created PR from $SOURCE to $TARGET"
+          else
+            echo "PR #$EXISTING already exists. Skipping."
+          fi
