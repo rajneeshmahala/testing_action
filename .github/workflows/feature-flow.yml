@@ -14,6 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Checkout code
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -24,7 +25,7 @@ jobs:
           BRANCH=${GITHUB_REF#refs/heads/}
           echo "branch=$BRANCH" >> $GITHUB_OUTPUT
 
-      # Map feature → WIP
+      # Map feature → WIP branch
       - name: Map WIP Branch
         id: map
         run: |
@@ -45,22 +46,25 @@ jobs:
 
           echo "target=$TARGET" >> $GITHUB_OUTPUT
 
-      # Merge conflict check
+      # Conflict detection (robust + safe)
       - name: Check Conflict with WIP
         run: |
           TARGET="${{ steps.map.outputs.target }}"
 
           git fetch origin $TARGET
 
-          # Try merge simulation
-          if git merge origin/$TARGET --no-commit --no-ff; then
+          # Create temp branch for safe merge simulation
+          git checkout -b temp-merge-check
+
+          # Try merge (handles unrelated history too)
+          if git merge origin/$TARGET --no-commit --no-ff --allow-unrelated-histories; then
             echo "✅ No conflict"
           else
-            echo "❌ Merge conflict detected. Fix required before PR."
+            echo "❌ Merge conflict detected. Fix before PR."
             exit 1
           fi
 
-      # Create PR (no approval logic, no extras)
+      # Create PR (no approval, no notify, pipeline ends here)
       - name: Create PR
         uses: peter-evans/create-pull-request@v5
         with:
@@ -69,3 +73,6 @@ jobs:
           body: |
             Source: ${{ steps.vars.outputs.branch }}
             Target: ${{ steps.map.outputs.target }}
+
+          labels: |
+            feature
