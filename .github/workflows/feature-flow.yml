@@ -1,8 +1,225 @@
-# ──────────────────────────────────────────────────────────────────────────────
-# WORKFLOW 2: PR approved → re-check conflicts → auto-merge into WIP branch
-# Save as: .github/workflows/feature-auto-merge.yml
-# ──────────────────────────────────────────────────────────────────────────────
-name: Feature — Auto-Merge on Approval
+# =============================================================================
+# feature/* push
+#   1. Detect team from branch name
+#   2. Auto-resolve any conflicts  (feature branch wins)
+#   3. Open PR  feature → wip/<same-team>  and wait for approval
+#
+# Save to: .github/workflows/feature-to-wip.yml
+# =============================================================================
+name: "Feature → WIP (auto-resolve conflicts + open PR)"
+
+on:
+  push:
+    branches:
+      - "feature/*"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  feature-to-wip:
+    runs-on: ubuntu-latest
+
+    steps:
+
+      # ── 1. Checkout ───────────────────────────────────────────────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure git identity
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "github-actions[bot]"
+
+      # ── 2. Derive team + WIP target from the feature branch name ─────────────
+      #
+      #   feature/api-team1-login  →  team=team1  component=api  wip=wip/api-team1
+      #   feature/ui-team2-navbar  →  team=team2  component=ui   wip=wip/ui-team2
+      #   feature/team3-payments   →  team=team3  component=api  wip=wip/api-team3
+      # ─────────────────────────────────────────────────────────────────────────
+      - name: Resolve branch names
+        id: names
+        run: |
+          FEATURE="${GITHUB_REF#refs/heads/}"
+
+          # ── detect team ──
+          if   [[ "$FEATURE" == *"team1"* ]]; then TEAM="team1"
+          elif [[ "$FEATURE" == *"team2"* ]]; then TEAM="team2"
+          elif [[ "$FEATURE" == *"team3"* ]]; then TEAM="team3"
+          else
+            TEAM="team1"
+            echo "⚠️  No team found in branch name — defaulting to team1"
+          fi
+
+          # ── detect component ──
+          if   [[ "$FEATURE" == *"ui"*  ]]; then COMPONENT="ui"
+          elif [[ "$FEATURE" == *"api"* ]]; then COMPONENT="api"
+          else
+            COMPONENT="api"
+            echo "⚠️  No component found in branch name — defaulting to api"
+          fi
+
+          WIP="wip/${COMPONENT}-${TEAM}"
+
+          echo "feature=$FEATURE"     >> "$GITHUB_OUTPUT"
+          echo "team=$TEAM"           >> "$GITHUB_OUTPUT"
+          echo "component=$COMPONENT" >> "$GITHUB_OUTPUT"
+          echo "wip=$WIP"             >> "$GITHUB_OUTPUT"
+
+          echo "────────────────────────────"
+          echo "  Feature branch : $FEATURE"
+          echo "  Team           : $TEAM"
+          echo "  WIP target     : $WIP"
+          echo "────────────────────────────"
+
+      # ── 3. Ensure the WIP branch exists (create from main if missing) ─────────
+      - name: Ensure WIP branch exists
+        run: |
+          WIP="${{ steps.names.outputs.wip }}"
+
+          if git ls-remote --exit-code --heads origin "$WIP" > /dev/null 2>&1; then
+            echo "✅  $WIP already exists"
+          else
+            echo "⚠️  $WIP not found — creating from main..."
+            git fetch origin main
+            git checkout -b "$WIP" origin/main
+            git push origin "$WIP"
+            echo "✅  Created and pushed $WIP"
+          fi
+
+      # ── 4. Auto-resolve conflicts and produce a clean merge commit ────────────
+      #
+      #   Strategy: git merge -X theirs
+      #     On any conflict → keep the FEATURE branch version (incoming wins).
+      #     If -X theirs still leaves unresolved files (binary, delete/modify, etc.)
+      #     we force-checkout those files from the feature branch as a fallback.
+      # ─────────────────────────────────────────────────────────────────────────
+      - name: Auto-resolve conflicts and stage merge commit
+        id: resolve
+        run: |
+          FEATURE="${{ steps.names.outputs.feature }}"
+          WIP="${{ steps.names.outputs.wip }}"
+
+          git fetch origin "$FEATURE" "$WIP"
+
+          # Start from the latest WIP
+          git checkout "$WIP"
+          git reset --hard "origin/$WIP"
+
+          echo "Attempting merge with -X theirs (feature wins on conflict)..."
+
+          if git merge --no-ff -X theirs "origin/$FEATURE" \
+               -m "chore: auto-resolve $FEATURE → $WIP [skip ci]"; then
+
+            echo "result=clean" >> "$GITHUB_OUTPUT"
+            echo "✅  Merged — no manual conflict resolution needed"
+
+          else
+            echo "⚠️  -X theirs left unresolved files — applying force-resolve fallback..."
+
+            # Identify every still-conflicted file and take the feature version
+            git diff --name-only --diff-filter=U | while read -r FILE; do
+              echo "    force-resolving: $FILE"
+              git checkout "origin/$FEATURE" -- "$FILE"
+              git add "$FILE"
+            done
+
+            git commit \
+              -m "chore: force-resolve conflicts $FEATURE → $WIP (feature wins) [skip ci]"
+
+            echo "result=force-resolved" >> "$GITHUB_OUTPUT"
+            echo "✅  Force-resolved and committed"
+          fi
+
+          # Push the updated WIP branch (this is what the PR will point at)
+          git push origin "$WIP"
+          echo "✅  Pushed $WIP"
+
+      # ── 5. Open PR  feature → wip/<team>  (skip if one already exists) ───────
+      - name: Open PR — feature → WIP
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FEATURE:  ${{ steps.names.outputs.feature }}
+          WIP:      ${{ steps.names.outputs.wip }}
+          TEAM:     ${{ steps.names.outputs.team }}
+          RESULT:   ${{ steps.resolve.outputs.result }}
+        run: |
+
+          # ── conflict badge for PR body ──────────────────────────────────────
+          if [[ "$RESULT" == "force-resolved" ]]; then
+            CONFLICT_ROW="| **Conflicts** | ⚠️ Auto-resolved — feature branch version kept |"
+          else
+            CONFLICT_ROW="| **Conflicts** | ✅ None |"
+          fi
+
+          # ── check for an existing open PR for this exact head → base ────────
+          EXISTING=$(gh pr list \
+            --repo  "$GITHUB_REPOSITORY" \
+            --head  "$FEATURE" \
+            --base  "$WIP" \
+            --state open \
+            --json  number,url \
+            --jq    '.[0]')
+
+          if [[ -n "$EXISTING" ]]; then
+            PR_NUMBER=$(echo "$EXISTING" | jq -r '.number')
+            PR_URL=$(echo "$EXISTING"    | jq -r '.url')
+            echo "ℹ️  PR #$PR_NUMBER already open ($FEATURE → $WIP) — posting update comment"
+
+            gh pr comment "$PR_NUMBER" \
+              --body "🔄 **Updated** — new push from \`${{ github.actor }}\`
+              Commit: \`${{ github.sha }}\`
+              $CONFLICT_ROW
+              ⏳ Please re-review and approve to complete the merge."
+
+            echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "pr_url=$PR_URL"       >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # ── create a fresh PR ────────────────────────────────────────────────
+          PR_URL=$(gh pr create \
+            --repo  "$GITHUB_REPOSITORY" \
+            --head  "$FEATURE" \
+            --base  "$WIP" \
+            --title "[$TEAM] $FEATURE → $WIP" \
+            --body  "## 🚀 Feature → WIP — Awaiting Approval
+
+| Field | Value |
+|-------|-------|
+| **Team**           | \`$TEAM\` |
+| **Feature branch** | \`$FEATURE\` |
+| **WIP target**     | \`$WIP\` |
+| **Triggered by**   | \`${{ github.actor }}\` |
+| **Commit**         | \`${{ github.sha }}\` |
+$CONFLICT_ROW
+
+---
+> ⏳ **Review this PR and approve to complete the merge into \`$WIP\`.**
+> The merge workflow runs automatically once approved — no manual steps needed.")
+
+          PR_NUMBER=$(gh pr view "$PR_URL" --json number --jq '.number')
+
+          echo "✅  PR #$PR_NUMBER created: $PR_URL"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "pr_url=$PR_URL"       >> "$GITHUB_OUTPUT"
+
+
+# =============================================================================
+# WORKFLOW 2 — PR approved  →  merge feature into wip/<team>
+#
+# Triggers on  pull_request_review: approved
+# Only fires for feature/* → wip/* PRs
+#
+# Save to: .github/workflows/wip-auto-merge-on-approval.yml
+# =============================================================================
+---
+name: "WIP — Auto-merge on PR approval"
 
 on:
   pull_request_review:
@@ -13,109 +230,73 @@ permissions:
   pull-requests: write
 
 jobs:
-  auto-merge:
+  merge-on-approval:
     runs-on: ubuntu-latest
 
-    # Only trigger when: review state is approved AND head is a feature branch
+    # Guard: only approved reviews on feature→wip PRs
     if: |
       github.event.review.state == 'approved' &&
-      startsWith(github.event.pull_request.head.ref, 'feature/')
+      startsWith(github.event.pull_request.head.ref, 'feature/') &&
+      startsWith(github.event.pull_request.base.ref, 'wip/')
 
     steps:
-      - name: Checkout Code
+
+      - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Configure Git Identity
+      - name: Configure git identity
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name  "github-actions[bot]"
 
-      # ── Read PR context from the review event ────────────────────────────────
-      - name: Get PR Details
-        id: pr
+      # ── Read context from the review event ───────────────────────────────────
+      - name: Read PR context
+        id: ctx
         run: |
-          SOURCE="${{ github.event.pull_request.head.ref }}"
-          TARGET="${{ github.event.pull_request.base.ref }}"
-          PR_NUMBER="${{ github.event.pull_request.number }}"
-          APPROVER="${{ github.event.review.user.login }}"
+          echo "feature=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+          echo "wip=${{ github.event.pull_request.base.ref }}"     >> "$GITHUB_OUTPUT"
+          echo "pr=${{ github.event.pull_request.number }}"        >> "$GITHUB_OUTPUT"
+          echo "approver=${{ github.event.review.user.login }}"    >> "$GITHUB_OUTPUT"
 
-          echo "source=$SOURCE"       >> "$GITHUB_OUTPUT"
-          echo "target=$TARGET"       >> "$GITHUB_OUTPUT"
-          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
-          echo "approver=$APPROVER"   >> "$GITHUB_OUTPUT"
-
-          echo "PR #$PR_NUMBER: $SOURCE → $TARGET (approved by $APPROVER)"
-
-      # ── Re-check conflicts (another branch may have pushed since PR opened) ──
-      - name: Re-check Conflicts Before Merge
-        id: conflict
-        run: |
-          SOURCE="${{ steps.pr.outputs.source }}"
-          TARGET="${{ steps.pr.outputs.target }}"
-
-          git fetch origin "$SOURCE" "$TARGET"
-
-          TMPDIR=$(mktemp -d)
-          git worktree add "$TMPDIR" "origin/$TARGET"
-
-          CONFLICT="false"
-          pushd "$TMPDIR" > /dev/null
-            if ! git merge --no-commit --no-ff "origin/$SOURCE" > /dev/null 2>&1; then
-              CONFLICT="true"
-            fi
-            git merge --abort 2>/dev/null || true
-          popd > /dev/null
-          git worktree remove --force "$TMPDIR"
-
-          echo "conflict=$CONFLICT" >> "$GITHUB_OUTPUT"
-
-      # ── Block and comment if new conflict appeared after approval ────────────
-      - name: Stop if Conflict Found
-        if: steps.conflict.outputs.conflict == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr comment "${{ steps.pr.outputs.pr_number }}" \
-            --body "⚠️ **Auto-merge blocked after approval.**
-            A conflict was detected — likely because \`${{ steps.pr.outputs.target }}\` received new commits after this PR was approved.
-            Please resolve the conflicts, then re-request review."
-          echo "::error::Conflict after approval — merge aborted."
-          exit 1
-
-      # ── Merge into WIP branch ────────────────────────────────────────────────
-      - name: Merge Feature into WIP
+      # ── Merge (with -X theirs fallback, same strategy as workflow 1) ─────────
+      - name: Merge feature into WIP
         id: merge
         run: |
-          SOURCE="${{ steps.pr.outputs.source }}"
-          TARGET="${{ steps.pr.outputs.target }}"
+          FEATURE="${{ steps.ctx.outputs.feature }}"
+          WIP="${{ steps.ctx.outputs.wip }}"
 
-          git fetch origin "$TARGET"
-          git checkout "$TARGET"
-          git merge --no-ff "origin/$SOURCE" \
-            -m "chore: merge $SOURCE → $TARGET (PR #${{ steps.pr.outputs.pr_number }}, approved by ${{ steps.pr.outputs.approver }}) [skip ci]"
-          git push origin "$TARGET"
+          git fetch origin "$FEATURE" "$WIP"
+          git checkout "$WIP"
+          git reset --hard "origin/$WIP"
 
-          echo "Merged '$SOURCE' into '$TARGET'."
+          if git merge --no-ff -X theirs "origin/$FEATURE" \
+               -m "chore: merge $FEATURE → $WIP (PR #${{ steps.ctx.outputs.pr }}, approved by ${{ steps.ctx.outputs.approver }}) [skip ci]"; then
+            echo "result=merged" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only --diff-filter=U | while read -r FILE; do
+              git checkout "origin/$FEATURE" -- "$FILE"
+              git add "$FILE"
+            done
+            git commit \
+              -m "chore: force-merge $FEATURE → $WIP (PR #${{ steps.ctx.outputs.pr }}) [skip ci]"
+            echo "result=force-merged" >> "$GITHUB_OUTPUT"
+          fi
 
-      # ── Leave a comment on the PR confirming the merge ───────────────────────
-      - name: Comment Merge Confirmation on PR
-        if: steps.merge.outcome == 'success'
+          git push origin "$WIP"
+
+      # ── Comment + close PR ───────────────────────────────────────────────────
+      - name: Comment and close PR
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh pr comment "${{ steps.pr.outputs.pr_number }}" \
-            --body "✅ **Auto-merged** into \`${{ steps.pr.outputs.target }}\` after approval by @${{ steps.pr.outputs.approver }}."
+          gh pr comment "${{ steps.ctx.outputs.pr }}" \
+            --body "✅ **Merged into \`${{ steps.ctx.outputs.wip }}\`** after approval by @${{ steps.ctx.outputs.approver }}."
 
-      # ── Optionally close the PR after merge (clean up) ───────────────────────
-      - name: Close PR After Merge
-        if: steps.merge.outcome == 'success'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh pr close "${{ steps.pr.outputs.pr_number }}" \
-            --comment "🔒 Closed automatically — changes merged into \`${{ steps.pr.outputs.target }}\`."
+          gh pr close "${{ steps.ctx.outputs.pr }}" \
+            --comment "🔒 Auto-closed — changes are now in \`${{ steps.ctx.outputs.wip }}\`."
 
-      
+      # ── Slack ────────────────────────────────────────────────────────────────
+     
