@@ -8,26 +8,23 @@ on:
 jobs:
   open-pr:
     runs-on: ubuntu-latest
-
     permissions:
       contents: write
       pull-requests: write
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      # Get branch name
       - name: Get Branch Name
         id: vars
-        run: |
-          echo "branch=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
+        run: echo "branch=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
 
-      # Map feature → WIP branch
-      - name: Map WIP Branch
+      - name: Map Feature → WIP Branch
         id: map
         run: |
           BRANCH="${{ steps.vars.outputs.branch }}"
-
           if [[ $BRANCH == *"api"* && $BRANCH == *"team1"* ]]; then
             TARGET="wip/api-team1"
           elif [[ $BRANCH == *"ui"* && $BRANCH == *"team1"* ]]; then
@@ -37,52 +34,41 @@ jobs:
           elif [[ $BRANCH == *"api"* && $BRANCH == *"team3"* ]]; then
             TARGET="wip/api-team3"
           else
-            echo "❌ Cannot determine WIP branch"
+            echo "❌ No matching WIP branch for: $BRANCH"
             exit 1
           fi
-
           echo "target=$TARGET" >> $GITHUB_OUTPUT
 
-      # ✅ Conflict check (safe method)
-      - name: Check Conflict
+      - name: Check Merge Conflict
         run: |
           TARGET="${{ steps.map.outputs.target }}"
-
           git fetch origin $TARGET
-
           BASE=$(git merge-base HEAD origin/$TARGET)
-
           if git merge-tree $BASE HEAD origin/$TARGET | grep -q "<<<<<<<"; then
-            echo "❌ Merge conflict detected with $TARGET"
+            echo "❌ Merge conflict detected with $TARGET — fix before PR can be created."
             exit 1
-          else
-            echo "✅ No conflict"
           fi
+          echo "✅ No conflict with $TARGET"
 
-      # 🚀 Create PR (reference-based logic)
       - name: Create Pull Request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           SOURCE="${{ steps.vars.outputs.branch }}"
           TARGET="${{ steps.map.outputs.target }}"
-
-          echo "Checking existing PR from $SOURCE → $TARGET"
-
           EXISTING=$(gh pr list \
             --base "$TARGET" \
             --head "$SOURCE" \
             --state open \
             --json number \
             --jq '.[0].number')
-
           if [ -z "$EXISTING" ]; then
-            echo "Creating new PR..."
             gh pr create \
               --base "$TARGET" \
               --head "$SOURCE" \
               --title "Feature → WIP: $SOURCE" \
-              --body "Auto-created PR from $SOURCE to $TARGET"
+              --body "Auto-created PR from \`$SOURCE\` to \`$TARGET\`"
+            echo "✅ PR created: $SOURCE → $TARGET"
           else
             echo "PR #$EXISTING already exists. Skipping."
           fi
