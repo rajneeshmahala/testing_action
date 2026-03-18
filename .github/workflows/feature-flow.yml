@@ -1,9 +1,9 @@
-name: Feature → WIP PR
+name: Auto PR (feature → wip dynamic team)
 
 on:
   push:
     branches:
-      - 'feature/*'
+      - 'feature/api*-team*'
 
 jobs:
   open-pr:
@@ -13,62 +13,72 @@ jobs:
       pull-requests: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Get Branch Name
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+      # ✅ Extract SOURCE + TEAM + TARGET dynamically
+      - name: Extract branch info
         id: vars
-        run: echo "branch=${GITHUB_REF#refs/heads/}" >> $GITHUB_OUTPUT
-
-      - name: Map Feature → WIP Branch
-        id: map
         run: |
-          BRANCH="${{ steps.vars.outputs.branch }}"
-          if [[ $BRANCH == *"api"* && $BRANCH == *"team1"* ]]; then
-            TARGET="wip/api-team1"
-          elif [[ $BRANCH == *"ui"* && $BRANCH == *"team1"* ]]; then
-            TARGET="wip/ui-team1"
-          elif [[ $BRANCH == *"api"* && $BRANCH == *"team2"* ]]; then
-            TARGET="wip/api-team2"
-          elif [[ $BRANCH == *"api"* && $BRANCH == *"team3"* ]]; then
-            TARGET="wip/api-team3"
+          SOURCE_BRANCH="${GITHUB_REF#refs/heads/}"
+
+          # Extract team name (team1, team2, etc.)
+          TEAM=$(echo "$SOURCE_BRANCH" | grep -o 'team[0-9]*')
+
+          TARGET_BRANCH="wip/api-$TEAM"
+
+          echo "source=$SOURCE_BRANCH" >> $GITHUB_OUTPUT
+          echo "target=$TARGET_BRANCH" >> $GITHUB_OUTPUT
+          echo "team=$TEAM" >> $GITHUB_OUTPUT
+
+          echo "Source: $SOURCE_BRANCH"
+          echo "Team: $TEAM"
+          echo "Target: $TARGET_BRANCH"
+
+      # ✅ Fetch target branch
+      - name: Fetch target branch
+        run: |
+          git fetch origin ${{ steps.vars.outputs.target }}
+
+      # ✅ Conflict check
+      - name: Check merge conflict
+        run: |
+          git checkout ${{ steps.vars.outputs.source }}
+
+          git merge origin/${{ steps.vars.outputs.target }} --no-commit --no-ff || echo "MERGE_FAILED=true" >> $GITHUB_ENV
+
+          if [ "$MERGE_FAILED" = "true" ]; then
+            echo "❌ Merge conflict detected with ${{ steps.vars.outputs.target }}"
+            exit 1
           else
-            echo "❌ No matching WIP branch for: $BRANCH"
-            exit 1
+            echo "✅ No conflicts"
           fi
-          echo "target=$TARGET" >> $GITHUB_OUTPUT
 
-      - name: Check Merge Conflict
-        run: |
-          TARGET="${{ steps.map.outputs.target }}"
-          git fetch origin $TARGET
-          BASE=$(git merge-base HEAD origin/$TARGET)
-          if git merge-tree $BASE HEAD origin/$TARGET | grep -q "<<<<<<<"; then
-            echo "❌ Merge conflict detected with $TARGET — fix before PR can be created."
-            exit 1
-          fi
-          echo "✅ No conflict with $TARGET"
+          git merge --abort || true
 
+      # ✅ Create PR
       - name: Create Pull Request
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          SOURCE="${{ steps.vars.outputs.branch }}"
-          TARGET="${{ steps.map.outputs.target }}"
-          EXISTING=$(gh pr list \
-            --base "$TARGET" \
-            --head "$SOURCE" \
-            --state open \
-            --json number \
-            --jq '.[0].number')
+          SOURCE="${{ steps.vars.outputs.source }}"
+          TARGET="${{ steps.vars.outputs.target }}"
+
+          EXISTING=$(gh pr list --base "$TARGET" --head "$SOURCE" --state open --json number --jq '.[0].number')
+
           if [ -z "$EXISTING" ]; then
             gh pr create \
               --base "$TARGET" \
               --head "$SOURCE" \
-              --title "Feature → WIP: $SOURCE" \
-              --body "Auto-created PR from \`$SOURCE\` to \`$TARGET\`"
-            echo "✅ PR created: $SOURCE → $TARGET"
+              --title "Auto PR: $SOURCE → $TARGET" \
+              --body "Automated PR for $TARGET (team-based flow)."
           else
             echo "PR #$EXISTING already exists. Skipping."
           fi
