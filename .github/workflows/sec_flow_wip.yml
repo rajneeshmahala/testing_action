@@ -3,7 +3,7 @@ name: PR → WIP CI (Before Merge)
 on:
   pull_request:
     branches:
-      - 'wip/api*'
+      - 'wip/**'
 
 jobs:
   ci-validation:
