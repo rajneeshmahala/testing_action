@@ -14,75 +14,174 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ─── Checkout ────────────────────────────────────────────────────────────
       - name: Checkout Code
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # Full history needed for cross-branch operations
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      # 🧠 Extract branch name
+      # ─── Git Identity (required for any merge operations) ────────────────────
+      - name: Configure Git Identity
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name  "github-actions[bot]"
+
+      # ─── Extract branch name ─────────────────────────────────────────────────
       - name: Get Branch Name
         id: vars
         run: |
-          BRANCH_NAME=${GITHUB_REF#refs/heads/}
-          echo "branch=$BRANCH_NAME" >> $GITHUB_OUTPUT
+          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
+          echo "branch=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
+          echo "ℹ️  Source branch: $BRANCH_NAME"
 
-      # 🧠 Determine target WIP branch dynamically
+      # ─── Map feature branch → WIP target branch ──────────────────────────────
       - name: Map to WIP Branch
         id: map
         run: |
           BRANCH="${{ steps.vars.outputs.branch }}"
+          echo "ℹ️  Determining WIP target for: $BRANCH"
 
-          if [[ $BRANCH == *"api"* && $BRANCH == *"team1"* ]]; then
-            echo "target=wip/api-team1" >> $GITHUB_OUTPUT
-          elif [[ $BRANCH == *"ui"* && $BRANCH == *"team1"* ]]; then
-            echo "target=wip/ui-team1" >> $GITHUB_OUTPUT
-          elif [[ $BRANCH == *"api"* && $BRANCH == *"team2"* ]]; then
-            echo "target=wip/api-team2" >> $GITHUB_OUTPUT
-          elif [[ $BRANCH == *"api"* && $BRANCH == *"team3"* ]]; then
-            echo "target=wip/api-team3" >> $GITHUB_OUTPUT
+          if   [[ "$BRANCH" == *"ui"*  && "$BRANCH" == *"team1"* ]]; then
+            TARGET="wip/ui-team1"
+          elif [[ "$BRANCH" == *"api"* && "$BRANCH" == *"team1"* ]]; then
+            TARGET="wip/api-team1"
+          elif [[ "$BRANCH" == *"api"* && "$BRANCH" == *"team2"* ]]; then
+            TARGET="wip/api-team2"
+          elif [[ "$BRANCH" == *"api"* && "$BRANCH" == *"team3"* ]]; then
+            TARGET="wip/api-team3"
           else
-            echo "target=wip/api-team1" >> $GITHUB_OUTPUT
+            TARGET="wip/api-team1"
+            echo "⚠️  No specific mapping found — falling back to $TARGET"
           fi
 
-      # 🔍 Merge Conflict Detection
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "✅ Mapped to: $TARGET"
+
+      # ─── Ensure the WIP target branch exists remotely ────────────────────────
+      - name: Verify Target Branch Exists
+        id: check_target
+        run: |
+          TARGET="${{ steps.map.outputs.target }}"
+          if git ls-remote --exit-code --heads origin "$TARGET" > /dev/null 2>&1; then
+            echo "exists=true"  >> "$GITHUB_OUTPUT"
+            echo "✅ Remote branch '$TARGET' found."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "⚠️  Remote branch '$TARGET' does NOT exist. Will create it."
+          fi
+
+      # ─── Create WIP branch if it doesn't exist ───────────────────────────────
+      - name: Create Target Branch If Missing
+        if: steps.check_target.outputs.exists == 'false'
+        run: |
+          TARGET="${{ steps.map.outputs.target }}"
+          git checkout -b "$TARGET"
+          git push origin "$TARGET"
+          echo "✅ Created and pushed new branch: $TARGET"
+
+      # ─── Merge Conflict Detection (isolated — does NOT alter working tree) ───
       - name: Check Merge Conflict
         id: conflict
         run: |
+          SOURCE="${{ steps.vars.outputs.branch }}"
           TARGET="${{ steps.map.outputs.target }}"
-          git fetch origin $TARGET
 
-          git checkout $TARGET
-          git checkout -
+          git fetch origin "$TARGET"
 
-          if git merge origin/$TARGET --no-commit --no-ff; then
-            echo "conflict=false" >> $GITHUB_OUTPUT
+          # Run the conflict test in a throw-away worktree so the main tree stays clean
+          TMPDIR=$(mktemp -d)
+          git worktree add "$TMPDIR" "origin/$TARGET"
+
+          CONFLICT="false"
+          pushd "$TMPDIR" > /dev/null
+            if ! git merge --no-commit --no-ff "origin/$SOURCE" 2>&1; then
+              CONFLICT="true"
+            fi
+            git merge --abort 2>/dev/null || true
+          popd > /dev/null
+
+          git worktree remove --force "$TMPDIR"
+
+          echo "conflict=$CONFLICT" >> "$GITHUB_OUTPUT"
+
+          if [[ "$CONFLICT" == "true" ]]; then
+            echo "❌ Merge conflict detected between '$SOURCE' and '$TARGET'."
           else
-            echo "conflict=true" >> $GITHUB_OUTPUT
+            echo "✅ No conflicts detected."
           fi
 
-      # ❌ Fail if conflict detected
+      # ─── Fail fast on conflict ────────────────────────────────────────────────
       - name: Stop if Conflict Found
         if: steps.conflict.outputs.conflict == 'true'
         run: |
-          echo "❌ Merge conflict detected with WIP branch. Fix required."
+          echo "::error::❌ Merge conflict detected between '${{ steps.vars.outputs.branch }}' and '${{ steps.map.outputs.target }}'. Please resolve conflicts before merging."
           exit 1
 
-      # 🤖 Create Pull Request
-      - name: Create PR to WIP
-        uses: peter-evans/create-pull-request@v5
+      # ─── Auto-merge feature branch → WIP branch ──────────────────────────────
+      - name: Auto-Merge Feature Into WIP
+        id: automerge
+        run: |
+          SOURCE="${{ steps.vars.outputs.branch }}"
+          TARGET="${{ steps.map.outputs.target }}"
+
+          git fetch origin "$TARGET"
+          git checkout "$TARGET"
+          git merge --no-ff "origin/$SOURCE" -m "chore: auto-merge $SOURCE → $TARGET [skip ci]"
+          git push origin "$TARGET"
+
+          echo "✅ Successfully merged '$SOURCE' into '$TARGET'."
+
+      # ─── Create PR from feature branch → WIP branch (for audit trail) ────────
+      - name: Create PR to WIP (Audit Trail)
+        id: create_pr
+        uses: peter-evans/create-pull-request@v6
         with:
+          token: ${{ secrets.GITHUB_TOKEN }}
           base: ${{ steps.map.outputs.target }}
-          title: "Auto PR: ${{ steps.vars.outputs.branch }} → ${{ steps.map.outputs.target }}"
+          branch: ${{ steps.vars.outputs.branch }}
+          title: "🤖 Auto-merge: ${{ steps.vars.outputs.branch }} → ${{ steps.map.outputs.target }}"
           body: |
-            🚀 Auto-created PR
+            ## 🚀 Automated Feature Pipeline
 
-            Source: ${{ steps.vars.outputs.branch }}
-            Target: ${{ steps.map.outputs.target }}
+            | Field   | Value |
+            |---------|-------|
+            | **Source** | `${{ steps.vars.outputs.branch }}` |
+            | **Target** | `${{ steps.map.outputs.target }}` |
+            | **Status** | ✅ Conflict check passed — auto-merged |
+            | **Triggered by** | `${{ github.actor }}` |
+            | **Commit** | `${{ github.sha }}` |
 
-            ✅ Conflict Check Passed
+            > This PR was auto-created for review/audit purposes. The merge has already been applied to the WIP branch.
+          labels: |
+            automated
+            feature-pipeline
 
-      # 📢 Slack Notification (Optional)
-     # - name: Notify Slack
-      #  if: always()
-       # run: |
-        #  curl -X POST -H 'Content-type: application/json' \
-         # --data "{\"text\":\"Feature Pipeline: ${{ steps.vars.outputs.branch }} processed\"}" \
-          #${{ secrets.SLACK_WEBHOOK }}
+      # ─── Slack Notification ───────────────────────────────────────────────────
+      - name: Notify Slack
+        if: always()
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          BRANCH:  ${{ steps.vars.outputs.branch }}
+          TARGET:  ${{ steps.map.outputs.target }}
+          CONFLICT: ${{ steps.conflict.outputs.conflict }}
+          STATUS:  ${{ job.status }}
+        run: |
+          if [[ "$CONFLICT" == "true" ]]; then
+            ICON="❌"
+            MESSAGE="Conflict detected — merge blocked."
+          elif [[ "$STATUS" == "success" ]]; then
+            ICON="✅"
+            MESSAGE="Successfully merged into \`$TARGET\`."
+          else
+            ICON="⚠️"
+            MESSAGE="Pipeline finished with status: $STATUS"
+          fi
+
+          curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            -H 'Content-type: application/json' \
+            --data "{
+              \"text\": \"$ICON *Feature Pipeline* | \`$BRANCH\` → \`$TARGET\`\n$MESSAGE\"
+            }" \
+            "$SLACK_WEBHOOK"
