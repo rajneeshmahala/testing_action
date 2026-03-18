@@ -1,0 +1,57 @@
+name: PR → WIP CI (Before Merge)
+
+on:
+  pull_request:
+    branches:
+      - 'wip/*'
+
+jobs:
+  ci-validation:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout code
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Setup Node (change if different tech)
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      # Install dependencies
+      - name: Install Dependencies
+        run: npm install
+
+      # 🔐 Credential Scanning (Gitleaks)
+      - name: Credential Scan
+        uses: gitleaks/gitleaks-action@v2
+
+      # 🛡️ Vulnerability Scanning (Filesystem)
+      - name: Trivy FS Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: fs
+          severity: CRITICAL,HIGH
+
+      # 🧹 Linting
+      - name: Lint Code
+        run: npm run lint
+
+      # 🧪 Unit Testing
+      - name: Run Unit Tests
+        run: npm test
+
+      # 🔗 Integration Testing (optional)
+      - name: Integration Tests
+        run: npm run test:integration || echo "No integration tests configured"
+
+      # 🏗️ Build
+      - name: Build Application
+        run: npm run build
+
+      # 📊 Static Code Analysis (SonarQube placeholder)
+      - name: Static Code Analysis
+        run: |
+          echo "Run SonarQube or CodeQL here"
