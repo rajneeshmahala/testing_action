@@ -3,7 +3,7 @@ name: Auto PR (feature → wip dynamic team)
 on:
   push:
     branches:
-      - 'feature/*-team*'
+      - 'feature/*'
 
 jobs:
   open-pr:
