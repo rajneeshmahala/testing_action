@@ -1,160 +1,121 @@
-name: Feature Automation Pipeline
+# ──────────────────────────────────────────────────────────────────────────────
+# WORKFLOW 2: PR approved → re-check conflicts → auto-merge into WIP branch
+# Save as: .github/workflows/feature-auto-merge.yml
+# ──────────────────────────────────────────────────────────────────────────────
+name: Feature — Auto-Merge on Approval
 
 on:
-  push:
-    branches:
-      - 'feature/*'
+  pull_request_review:
+    types: [submitted]
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  feature-flow:
+  auto-merge:
     runs-on: ubuntu-latest
 
+    # Only trigger when: review state is approved AND head is a feature branch
+    if: |
+      github.event.review.state == 'approved' &&
+      startsWith(github.event.pull_request.head.ref, 'feature/')
+
     steps:
-      # ─── Checkout ────────────────────────────────────────────────────────────
       - name: Checkout Code
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0          # Full history needed for cross-branch operations
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      # ─── Git Identity (required for any merge operations) ────────────────────
       - name: Configure Git Identity
         run: |
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git config user.name  "github-actions[bot]"
 
-      # ─── Extract branch name ─────────────────────────────────────────────────
-      - name: Get Branch Name
-        id: vars
+      # ── Read PR context from the review event ────────────────────────────────
+      - name: Get PR Details
+        id: pr
         run: |
-          BRANCH_NAME="${GITHUB_REF#refs/heads/}"
-          echo "branch=$BRANCH_NAME" >> "$GITHUB_OUTPUT"
-          echo "ℹ️  Source branch: $BRANCH_NAME"
+          SOURCE="${{ github.event.pull_request.head.ref }}"
+          TARGET="${{ github.event.pull_request.base.ref }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          APPROVER="${{ github.event.review.user.login }}"
 
-      # ─── Map feature branch → WIP target branch ──────────────────────────────
-      - name: Map to WIP Branch
-        id: map
-        run: |
-          BRANCH="${{ steps.vars.outputs.branch }}"
-          echo "ℹ️  Determining WIP target for: $BRANCH"
+          echo "source=$SOURCE"       >> "$GITHUB_OUTPUT"
+          echo "target=$TARGET"       >> "$GITHUB_OUTPUT"
+          echo "pr_number=$PR_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "approver=$APPROVER"   >> "$GITHUB_OUTPUT"
 
-          if   [[ "$BRANCH" == *"ui"*  && "$BRANCH" == *"team1"* ]]; then
-            TARGET="wip/ui-team1"
-          elif [[ "$BRANCH" == *"api"* && "$BRANCH" == *"team1"* ]]; then
-            TARGET="wip/api-team1"
-          elif [[ "$BRANCH" == *"api"* && "$BRANCH" == *"team2"* ]]; then
-            TARGET="wip/api-team2"
-          elif [[ "$BRANCH" == *"api"* && "$BRANCH" == *"team3"* ]]; then
-            TARGET="wip/api-team3"
-          else
-            TARGET="wip/api-team1"
-            echo "⚠️  No specific mapping found — falling back to $TARGET"
-          fi
+          echo "PR #$PR_NUMBER: $SOURCE → $TARGET (approved by $APPROVER)"
 
-          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
-          echo "✅ Mapped to: $TARGET"
-
-      # ─── Ensure the WIP target branch exists remotely ────────────────────────
-      - name: Verify Target Branch Exists
-        id: check_target
-        run: |
-          TARGET="${{ steps.map.outputs.target }}"
-          if git ls-remote --exit-code --heads origin "$TARGET" > /dev/null 2>&1; then
-            echo "exists=true"  >> "$GITHUB_OUTPUT"
-            echo "✅ Remote branch '$TARGET' found."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "⚠️  Remote branch '$TARGET' does NOT exist. Will create it."
-          fi
-
-      # ─── Create WIP branch if it doesn't exist ───────────────────────────────
-      - name: Create Target Branch If Missing
-        if: steps.check_target.outputs.exists == 'false'
-        run: |
-          TARGET="${{ steps.map.outputs.target }}"
-          git checkout -b "$TARGET"
-          git push origin "$TARGET"
-          echo "✅ Created and pushed new branch: $TARGET"
-
-      # ─── Merge Conflict Detection (isolated — does NOT alter working tree) ───
-      - name: Check Merge Conflict
+      # ── Re-check conflicts (another branch may have pushed since PR opened) ──
+      - name: Re-check Conflicts Before Merge
         id: conflict
         run: |
-          SOURCE="${{ steps.vars.outputs.branch }}"
-          TARGET="${{ steps.map.outputs.target }}"
+          SOURCE="${{ steps.pr.outputs.source }}"
+          TARGET="${{ steps.pr.outputs.target }}"
 
-          git fetch origin "$TARGET"
+          git fetch origin "$SOURCE" "$TARGET"
 
-          # Run the conflict test in a throw-away worktree so the main tree stays clean
           TMPDIR=$(mktemp -d)
           git worktree add "$TMPDIR" "origin/$TARGET"
 
           CONFLICT="false"
           pushd "$TMPDIR" > /dev/null
-            if ! git merge --no-commit --no-ff "origin/$SOURCE" 2>&1; then
+            if ! git merge --no-commit --no-ff "origin/$SOURCE" > /dev/null 2>&1; then
               CONFLICT="true"
             fi
             git merge --abort 2>/dev/null || true
           popd > /dev/null
-
           git worktree remove --force "$TMPDIR"
 
           echo "conflict=$CONFLICT" >> "$GITHUB_OUTPUT"
 
-          if [[ "$CONFLICT" == "true" ]]; then
-            echo "❌ Merge conflict detected between '$SOURCE' and '$TARGET'."
-          else
-            echo "✅ No conflicts detected."
-          fi
-
-      # ─── Fail fast on conflict ────────────────────────────────────────────────
+      # ── Block and comment if new conflict appeared after approval ────────────
       - name: Stop if Conflict Found
         if: steps.conflict.outputs.conflict == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          echo "::error::❌ Merge conflict detected between '${{ steps.vars.outputs.branch }}' and '${{ steps.map.outputs.target }}'. Please resolve conflicts before merging."
+          gh pr comment "${{ steps.pr.outputs.pr_number }}" \
+            --body "⚠️ **Auto-merge blocked after approval.**
+            A conflict was detected — likely because \`${{ steps.pr.outputs.target }}\` received new commits after this PR was approved.
+            Please resolve the conflicts, then re-request review."
+          echo "::error::Conflict after approval — merge aborted."
           exit 1
 
-      # ─── Auto-merge feature branch → WIP branch ──────────────────────────────
-      - name: Auto-Merge Feature Into WIP
-        id: automerge
+      # ── Merge into WIP branch ────────────────────────────────────────────────
+      - name: Merge Feature into WIP
+        id: merge
         run: |
-          SOURCE="${{ steps.vars.outputs.branch }}"
-          TARGET="${{ steps.map.outputs.target }}"
+          SOURCE="${{ steps.pr.outputs.source }}"
+          TARGET="${{ steps.pr.outputs.target }}"
 
           git fetch origin "$TARGET"
           git checkout "$TARGET"
-          git merge --no-ff "origin/$SOURCE" -m "chore: auto-merge $SOURCE → $TARGET [skip ci]"
+          git merge --no-ff "origin/$SOURCE" \
+            -m "chore: merge $SOURCE → $TARGET (PR #${{ steps.pr.outputs.pr_number }}, approved by ${{ steps.pr.outputs.approver }}) [skip ci]"
           git push origin "$TARGET"
 
-          echo "✅ Successfully merged '$SOURCE' into '$TARGET'."
+          echo "Merged '$SOURCE' into '$TARGET'."
 
-      # ─── Create PR from feature branch → WIP branch (for audit trail) ────────
-      - name: Create PR to WIP (Audit Trail)
-        id: create_pr
-        uses: peter-evans/create-pull-request@v6
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          base: ${{ steps.map.outputs.target }}
-          branch: ${{ steps.vars.outputs.branch }}
-          title: "🤖 Auto-merge: ${{ steps.vars.outputs.branch }} → ${{ steps.map.outputs.target }}"
-          body: |
-            ## 🚀 Automated Feature Pipeline
+      # ── Leave a comment on the PR confirming the merge ───────────────────────
+      - name: Comment Merge Confirmation on PR
+        if: steps.merge.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment "${{ steps.pr.outputs.pr_number }}" \
+            --body "✅ **Auto-merged** into \`${{ steps.pr.outputs.target }}\` after approval by @${{ steps.pr.outputs.approver }}."
 
-            | Field   | Value |
-            |---------|-------|
-            | **Source** | `${{ steps.vars.outputs.branch }}` |
-            | **Target** | `${{ steps.map.outputs.target }}` |
-            | **Status** | ✅ Conflict check passed — auto-merged |
-            | **Triggered by** | `${{ github.actor }}` |
-            | **Commit** | `${{ github.sha }}` |
+      # ── Optionally close the PR after merge (clean up) ───────────────────────
+      - name: Close PR After Merge
+        if: steps.merge.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr close "${{ steps.pr.outputs.pr_number }}" \
+            --comment "🔒 Closed automatically — changes merged into \`${{ steps.pr.outputs.target }}\`."
 
-            > This PR was auto-created for review/audit purposes. The merge has already been applied to the WIP branch.
-          labels: |
-            automated
-            feature-pipeline
-
-      # ─── Slack Notification ───────────────────────────────────────────────────
+      
