@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout repo
+      # Checkout code
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -45,30 +45,35 @@ jobs:
 
           echo "target=$TARGET" >> $GITHUB_OUTPUT
 
-      # 🔥 SIMPLE & RELIABLE CONFLICT CHECK (NO MERGE COMMIT)
-      - name: Check Conflict (Safe Method)
+      # ✅ Safe conflict detection (no merge commit, no errors)
+      - name: Check Conflict
         run: |
           TARGET="${{ steps.map.outputs.target }}"
 
           git fetch origin $TARGET
 
-          # Try dry-run merge (no commit, no identity issue)
-          if git merge-tree $(git merge-base HEAD origin/$TARGET) HEAD origin/$TARGET | grep -q "<<<<<<<"; then
+          BASE=$(git merge-base HEAD origin/$TARGET)
+
+          if git merge-tree $BASE HEAD origin/$TARGET | grep -q "<<<<<<<"; then
             echo "❌ Merge conflict detected with $TARGET"
             exit 1
           else
             echo "✅ No conflict"
           fi
 
-      # Create PR
+      # 🚀 Create PR using GitHub CLI
       - name: Create PR
-        uses: peter-evans/create-pull-request@v5
-        with:
-          base: ${{ steps.map.outputs.target }}
-          title: "Feature → WIP: ${{ steps.vars.outputs.branch }}"
-          body: |
-            Source: ${{ steps.vars.outputs.branch }}
-            Target: ${{ steps.map.outputs.target }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SOURCE="${{ steps.vars.outputs.branch }}"
+          TARGET="${{ steps.map.outputs.target }}"
 
-          labels: |
-            feature
+          echo "Creating PR from $SOURCE → $TARGET"
+
+          gh pr create \
+            --base "$TARGET" \
+            --head "$SOURCE" \
+            --title "Feature → WIP: $SOURCE" \
+            --body "Auto-created PR from $SOURCE to $TARGET" \
+          || echo "PR already exists or cannot be created"
