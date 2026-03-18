@@ -1,0 +1,12 @@
+{
+  "name": "demo-ci-app",
+  "version": "1.0.0",
+  "description": "Minimal CI demo",
+  "main": "app.js",
+  "scripts": {
+    "lint": "echo 'Lint OK'",
+    "test": "node test/app.test.js",
+    "test:integration": "echo 'No integration test'",
+    "build": "echo 'Build successful'"
+  }
+}
