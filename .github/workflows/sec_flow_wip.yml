@@ -26,6 +26,13 @@ jobs:
       # Install dependencies
       - name: Install Dependencies
         run: npm install
+      
+        # 🔐 Credential Scanning (FIXED)
+      - name: Credential Scan (Gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          args: detect --no-git --source=. --redact
+
       - uses: SonarSource/sonarqube-scan-action@v6
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -38,12 +45,8 @@ jobs:
           pollingTimeoutSec: 300
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-      # 🔐 Credential Scanning (FIXED)
-      - name: Credential Scan (Gitleaks)
-        uses: gitleaks/gitleaks-action@v2
-        with:
-          args: detect --no-git --source=. --redact
-
+      
+      
       # 🛡️ Vulnerability Scanning (stable)
       - name: Trivy FS Scan
         uses: aquasecurity/trivy-action@master
