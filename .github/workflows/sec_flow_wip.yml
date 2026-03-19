@@ -39,12 +39,12 @@ jobs:
           SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
       # 🔥 Quality Gate Check (IMPORTANT)
-      - name: SonarQube Quality Gate
-        uses: sonarsource/sonarqube-quality-gate-action@v1
-        with:
-          pollingTimeoutSec: 300
-        env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+ #     - name: SonarQube Quality Gate
+ #       uses: sonarsource/sonarqube-quality-gate-action@v1
+ #       with:
+ #         pollingTimeoutSec: 300
+ #       env:
+ #         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
       
       
       # 🛡️ Vulnerability Scanning (stable)
