@@ -1,5 +1,7 @@
 const { add } = require("../app");
-
+test("adds numbers correctly", () => {
+  expect(add(2, 3)).toBe(5);
+});
 function assertEqual(actual, expected) {
   if (actual !== expected) {
     console.error(`❌ Test failed: ${actual} !== ${expected}`);
