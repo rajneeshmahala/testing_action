@@ -13,3 +13,5 @@ assertEqual(add(2, 3), 5);
 assertEqual(add(1, 1), 2);
 
 console.log("✅ All tests passed");
+
+
