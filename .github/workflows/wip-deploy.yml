@@ -1,24 +1,30 @@
 name: WIP Build & Deploy
 
 on:
-  push:
-    branches:
-      - 'wip/**'
+  workflow_run:
+    workflows: ["PR → WIP CI (Before Merge)"]   # 🔥 pipeline name
+    types:
+      - completed
 
 permissions:
   contents: read
-  id-token: write   # for Azure login (future use)
+  id-token: write
 
 jobs:
   deploy:
+    # ✅ run only if CI passed
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout
+      # Checkout correct commit
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
-      # Setup Node (if needed for build)
+      # Setup Node
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
@@ -32,6 +38,12 @@ jobs:
       - name: Build App
         run: npm run build
 
+      # Deploy (mock)
+      - name: Deploy
+        run: echo "🚀 Deploy triggered after CI success"
+
+      - name: Done
+        run: echo "✅ Deployment successful"
       # 🐳 Build Docker image
  #     - name: Build Docker Image
  #       run: |
@@ -73,4 +85,3 @@ jobs:
         run: |
           echo "✅ Deployment successful to ${{ steps.env.outputs.env }}"
 
-          
