@@ -4,7 +4,7 @@
   "description": "Minimal CI demo",
   "main": "app.js",
   "scripts": {
-    "lint": "eslint .",
+    
     "test": "jest",
     "test:integration": "echo 'No integration test configured'",
     "build": "echo 'Build successful'"

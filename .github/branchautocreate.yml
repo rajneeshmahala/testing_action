@@ -1,0 +1,79 @@
+name: Feature → WIP Dynamic Branch Manager
+
+on:
+  push:
+    branches:
+      - 'feature/*'
+
+permissions:
+  contents: write
+
+jobs:
+  manage-wip:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Extract & Validate Branch
+        id: extract
+        run: |
+          SOURCE_BRANCH=${GITHUB_REF#refs/heads/}
+          echo "SOURCE_BRANCH=$SOURCE_BRANCH" >> $GITHUB_ENV
+
+          echo "Processing branch: $SOURCE_BRANCH"
+
+          # Validate pattern
+          if [[ ! "$SOURCE_BRANCH" =~ ^feature\/([a-zA-Z0-9]+)-[a-zA-Z0-9]+-(sprint[0-9]+)-([a-zA-Z0-9]+)$ ]]; then
+            echo "❌ Invalid branch format!"
+            echo "Expected: feature/<app>-xx-sprintid-teamname"
+            exit 1
+          fi
+
+          APP_NAME=$(echo $SOURCE_BRANCH | sed -E 's#feature/([^-]+)-.*#\1#')
+          SPRINT=$(echo $SOURCE_BRANCH | grep -o 'sprint[0-9]\+')
+          TEAM=$(echo $SOURCE_BRANCH | sed -E 's#.*-(team[^-]+)$#\1#')
+
+          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+          echo "SPRINT=$SPRINT" >> $GITHUB_ENV
+          echo "TEAM=$TEAM" >> $GITHUB_ENV
+
+          WIP_BRANCH="wip/${APP_NAME}-${SPRINT}-${TEAM}"
+          echo "WIP_BRANCH=$WIP_BRANCH" >> $GITHUB_ENV
+
+          echo "✅ Parsed:"
+          echo "App: $APP_NAME"
+          echo "Sprint: $SPRINT"
+          echo "Team: $TEAM"
+          echo "WIP: $WIP_BRANCH"
+
+      - name: Check if WIP branch exists
+        id: check
+        run: |
+          git fetch origin
+
+          if git ls-remote --exit-code --heads origin $WIP_BRANCH; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+            echo "✅ Branch already exists"
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+            echo "🚀 Branch will be created"
+          fi
+
+      - name: Create WIP branch
+        if: steps.check.outputs.exists == 'false'
+        run: |
+          echo "Creating $WIP_BRANCH"
+
+          # Create from main (recommended)
+          git checkout origin/main -b $WIP_BRANCH
+
+          git push origin $WIP_BRANCH
+
+      - name: Summary
+        run: |
+          echo "================================"
+          echo "SOURCE: $SOURCE_BRANCH"
+          echo "WIP: $WIP_BRANCH"
+          echo "================================"
