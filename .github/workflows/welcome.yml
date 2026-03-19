@@ -1,0 +1,15 @@
+name: Welcome Pipeline
+
+on:
+  workflow_run:
+    workflows: ["Hello Pipeline"]   # Must match name of first workflow
+    types:
+      - completed
+
+jobs:
+  say-welcome:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Print Welcome
+        run: echo "Welcome from Second Pipeline 🎉"
