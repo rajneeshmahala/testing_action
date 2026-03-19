@@ -1,4 +1,4 @@
-name: Feature → WIP Dynamic Branch Manager
+name: Feature → WIP Branch Manager
 
 on:
   push:
@@ -24,22 +24,26 @@ jobs:
 
           echo "Processing branch: $SOURCE_BRANCH"
 
-          # Validate pattern
-          if [[ ! "$SOURCE_BRANCH" =~ ^feature\/([a-zA-Z0-9]+)-[a-zA-Z0-9]+-(sprint[0-9]+)-([a-zA-Z0-9]+)$ ]]; then
+          # Strict format:
+          # feature/<app>-xx-<number>-<team>
+          if [[ ! "$SOURCE_BRANCH" =~ ^feature\/([a-zA-Z0-9]+)-([a-zA-Z0-9]+)-([0-9]+)-(team[a-zA-Z0-9]+)$ ]]; then
             echo "❌ Invalid branch format!"
-            echo "Expected: feature/<app>-xx-sprintid-teamname"
+            echo "Expected: feature/<app>-xx-<sprintNumber>-<teamname>"
             exit 1
           fi
 
-          APP_NAME=$(echo $SOURCE_BRANCH | sed -E 's#feature/([^-]+)-.*#\1#')
-          SPRINT=$(echo $SOURCE_BRANCH | grep -o 'sprint[0-9]\+')
-          TEAM=$(echo $SOURCE_BRANCH | sed -E 's#.*-(team[^-]+)$#\1#')
+          APP_NAME=$(echo $SOURCE_BRANCH | cut -d'/' -f2 | cut -d'-' -f1)
+          SPRINT_NUM=$(echo $SOURCE_BRANCH | cut -d'-' -f3)
+          TEAM=$(echo $SOURCE_BRANCH | cut -d'-' -f4)
+
+          # Normalize sprint
+          SPRINT="sprint${SPRINT_NUM}"
+
+          WIP_BRANCH="wip/${APP_NAME}-${SPRINT}-${TEAM}"
 
           echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
           echo "SPRINT=$SPRINT" >> $GITHUB_ENV
           echo "TEAM=$TEAM" >> $GITHUB_ENV
-
-          WIP_BRANCH="wip/${APP_NAME}-${SPRINT}-${TEAM}"
           echo "WIP_BRANCH=$WIP_BRANCH" >> $GITHUB_ENV
 
           echo "✅ Parsed:"
@@ -66,9 +70,8 @@ jobs:
         run: |
           echo "Creating $WIP_BRANCH"
 
-          # Create from main (recommended)
+          # Create from main (best practice)
           git checkout origin/main -b $WIP_BRANCH
-
           git push origin $WIP_BRANCH
 
       - name: Summary
