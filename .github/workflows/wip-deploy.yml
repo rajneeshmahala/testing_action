@@ -44,7 +44,23 @@ jobs:
 
       - name: Done
         run: echo "✅ Deployment successful"
-      # 🐳 Build Docker image
+     
+      - name: Build Docker Image
+        run: |
+          docker build -t demo-ci-app:${{ github.sha }} .
+
+      # 🧪 Docker Run Test (optional but best practice)
+      - name: Run Container Test
+        run: |
+          docker run -d -p 3000:3000 --name test-container demo-ci-app:${{ github.sha }}
+          sleep 5
+          docker ps
+          docker stop test-container
+
+     
+     
+     
+        # 🐳 Build Docker image
  #     - name: Build Docker Image
  #       run: |
  #         IMAGE_NAME=demo-app
