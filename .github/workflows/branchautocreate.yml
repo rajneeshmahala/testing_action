@@ -22,35 +22,27 @@ jobs:
           SOURCE_BRANCH=${GITHUB_REF#refs/heads/}
           echo "SOURCE_BRANCH=$SOURCE_BRANCH" >> $GITHUB_ENV
 
-          echo "Processing branch: $SOURCE_BRANCH"
+          echo "Processing: $SOURCE_BRANCH"
 
-          # Strict format:
-          # feature/<app>-xx-<number>-<team>
+          # Strict format: feature/<app>-xx-<number>-<team>
           if [[ ! "$SOURCE_BRANCH" =~ ^feature\/([a-zA-Z0-9]+)-([a-zA-Z0-9]+)-([0-9]+)-(team[a-zA-Z0-9]+)$ ]]; then
             echo "❌ Invalid branch format!"
-            echo "Expected: feature/<app>-xx-<sprintNumber>-<teamname>"
+            echo "Expected: feature/<app>-xx-<number>-<team>"
             exit 1
           fi
 
-          APP_NAME=$(echo $SOURCE_BRANCH | cut -d'/' -f2 | cut -d'-' -f1)
-          SPRINT_NUM=$(echo $SOURCE_BRANCH | cut -d'-' -f3)
+          APP=$(echo $SOURCE_BRANCH | cut -d'/' -f2 | cut -d'-' -f1)
+          SPRINT=$(echo $SOURCE_BRANCH | cut -d'-' -f3)
           TEAM=$(echo $SOURCE_BRANCH | cut -d'-' -f4)
 
-          # Normalize sprint
-          SPRINT="sprint${SPRINT_NUM}"
+          WIP_BRANCH="wip/${APP}-${SPRINT}-${TEAM}"
 
-          WIP_BRANCH="wip/${APP_NAME}-${SPRINT}-${TEAM}"
-
-          echo "APP_NAME=$APP_NAME" >> $GITHUB_ENV
+          echo "APP=$APP" >> $GITHUB_ENV
           echo "SPRINT=$SPRINT" >> $GITHUB_ENV
           echo "TEAM=$TEAM" >> $GITHUB_ENV
           echo "WIP_BRANCH=$WIP_BRANCH" >> $GITHUB_ENV
 
-          echo "✅ Parsed:"
-          echo "App: $APP_NAME"
-          echo "Sprint: $SPRINT"
-          echo "Team: $TEAM"
-          echo "WIP: $WIP_BRANCH"
+          echo "✅ WIP Branch: $WIP_BRANCH"
 
       - name: Check if WIP branch exists
         id: check
@@ -59,24 +51,23 @@ jobs:
 
           if git ls-remote --exit-code --heads origin $WIP_BRANCH; then
             echo "exists=true" >> $GITHUB_OUTPUT
-            echo "✅ Branch already exists"
+            echo "✅ Branch already exists → skipping creation"
           else
             echo "exists=false" >> $GITHUB_OUTPUT
-            echo "🚀 Branch will be created"
+            echo "🚀 Branch does not exist → will create"
           fi
 
-      - name: Create WIP branch
+      - name: Create WIP branch (only if missing)
         if: steps.check.outputs.exists == 'false'
         run: |
-          echo "Creating $WIP_BRANCH"
-
-          # Create from main (best practice)
+          echo "Creating $WIP_BRANCH from main"
           git checkout origin/main -b $WIP_BRANCH
           git push origin $WIP_BRANCH
 
-      - name: Summary
+      - name: Complete Pipeline
         run: |
-          echo "================================"
-          echo "SOURCE: $SOURCE_BRANCH"
-          echo "WIP: $WIP_BRANCH"
-          echo "================================"
+          if [ "${{ steps.check.outputs.exists }}" == "true" ]; then
+            echo "✔ Pipeline completed: Branch already existed"
+          else
+            echo "✔ Pipeline completed: Branch created"
+          fi
