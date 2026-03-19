@@ -1,0 +1,73 @@
+name: WIP Build & Deploy
+
+on:
+  push:
+    branches:
+      - 'wip/**'
+
+permissions:
+  contents: read
+  id-token: write   # for Azure login (future use)
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Checkout
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # Setup Node (if needed for build)
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+
+      # Install deps
+      - name: Install Dependencies
+        run: npm install
+
+      # Build app
+      - name: Build App
+        run: npm run build
+
+      # 🐳 Build Docker image
+      - name: Build Docker Image
+        run: |
+          IMAGE_NAME=demo-app
+          docker build -t $IMAGE_NAME:${{ github.sha }} .
+
+      # 🔐 Scan Docker image (Trivy)
+      - name: Trivy Image Scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: demo-app:${{ github.sha }}
+        continue-on-error: true   # for R&D
+
+      # 🧠 Map branch → environment
+      - name: Map Environment
+        id: env
+        run: |
+          BRANCH=${GITHUB_REF#refs/heads/}
+
+          if [[ $BRANCH == *"team1"* ]]; then
+            echo "env=qa-team1" >> $GITHUB_OUTPUT
+          elif [[ $BRANCH == *"team2"* ]]; then
+            echo "env=qa-team2" >> $GITHUB_OUTPUT
+          elif [[ $BRANCH == *"team3"* ]]; then
+            echo "env=qa-team3" >> $GITHUB_OUTPUT
+          else
+            echo "env=qa-default" >> $GITHUB_OUTPUT
+          fi
+
+      # 🚀 Deploy (mock for now)
+      - name: Deploy to Environment
+        run: |
+          echo "Deploying to ${{ steps.env.outputs.env }}"
+          echo "Image: demo-app:${{ github.sha }}"
+
+      # 📢 Notification (optional)
+      - name: Deployment Success
+        run: |
+          echo "✅ Deployment successful to ${{ steps.env.outputs.env }}"
